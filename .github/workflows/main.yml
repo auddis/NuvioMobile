@@ -15,13 +15,20 @@ jobs:
     steps:
       - name: 1. Check Upstream Latest Release / Commit
         id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Fetch latest tag from upstream NuvioMobile repo
-          UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/releases/latest | jq -r .tag_name)
+          # Fetch latest tag from upstream NuvioMobile repo using gh CLI
+          UPSTREAM_TAG=$(gh api repos/NuvioMedia/NuvioMobile/releases/latest --jq '.tag_name' 2>/dev/null || true)
 
           # Fallback to cmp-rewrite branch short commit SHA if no release tags exist
-          if [ "$UPSTREAM_TAG" == "null" ] || [ -z "$UPSTREAM_TAG" ]; then
-            UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/commits/cmp-rewrite | jq -r .sha | cut -c1-7)
+          if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" == "null" ]; then
+            UPSTREAM_TAG=$(gh api repos/NuvioMedia/NuvioMobile/commits/cmp-rewrite --jq '.sha[0:7]' 2>/dev/null || true)
+          fi
+
+          # Hard fallback to branch name if API is unavailable
+          if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" == "null" ]; then
+            UPSTREAM_TAG="cmp-rewrite"
           fi
 
           echo "tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
