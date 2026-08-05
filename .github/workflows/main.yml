@@ -32,18 +32,22 @@ jobs:
         with:
           repository: 'NuvioMedia/NuvioMobile'
           ref: ${{ steps.upstream.outputs.tag }}
-          submodules: recursive
 
-      - name: 3. Set up Java
+      - name: 3. Initialize Required Submodules
+        run: |
+          git submodule sync || true
+          git submodule update --init --recursive MPVKit || true
+
+      - name: 4. Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: 4. Set up Gradle
+      - name: 5. Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: 5. Compile iOS Release Build via Xcode
+      - name: 6. Compile iOS Release Build via Xcode
         run: |
           # Clean build directory
           rm -rf iosApp/build Payload NuvioMobile-*.ipa
@@ -58,7 +62,7 @@ jobs:
             CODE_SIGNING_IDENTITY="" \
             PROVISIONING_PROFILE_SPECIFIER=""
 
-      - name: 6. Package Unsigned .ipa File
+      - name: 7. Package Unsigned .ipa File
         run: |
           mkdir -p Payload
           APP_PATH=$(find iosApp/build/Build/Products/Release-iphoneos -name "*.app" | head -n 1)
@@ -74,7 +78,7 @@ jobs:
 
           echo "IPA Created: NuvioMobile-${{ steps.upstream.outputs.tag }}.ipa"
 
-      - name: 7. Publish Built .ipa to GitHub Releases
+      - name: 8. Publish Built .ipa to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.upstream.outputs.tag }}
