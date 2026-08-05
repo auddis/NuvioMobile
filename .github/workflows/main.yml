@@ -1,0 +1,87 @@
+name: Build NuvioMobile iOS
+
+    on:
+      schedule:
+        - cron: '0 2 * * *'  # Runs automatically every day at 2:00 AM UTC
+      workflow_dispatch:      # Allows manual trigger anytime from GitHub UI
+
+    jobs:
+      check-and-build:
+        runs-on: self-hosted  # Targets your Mac mini self-hosted runner
+
+        steps:
+          - name: 1. Check Upstream Latest Release / Commit
+            id: upstream
+            run: |
+              # Fetch latest tag from upstream NuvioMobile repo
+              UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/releases/latest | jq -r .tag_name)
+
+              # Fallback to main branch short commit SHA if no release tags exist
+              if [ "$UPSTREAM_TAG" == "null" ] || [ -z "$UPSTREAM_TAG" ]; then
+                UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/commits/main | jq -r .sha | cut -c1-7)
+              fi
+
+              echo "tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+              echo "Upstream version found: $UPSTREAM_TAG"
+
+          - name: 2. Checkout NuvioMobile Code
+            uses: actions/checkout@v4
+            with:
+              repository: 'NuvioMedia/NuvioMobile'
+              ref: ${{ steps.upstream.outputs.tag }}
+              submodules: recursive
+
+          - name: 3. Install CocoaPods Dependencies (if present)
+            run: |
+              if [ -f "Podfile" ]; then
+                echo "Installing CocoaPods..."
+                pod install || pod install --repo-update
+              fi
+
+          - name: 4. Compile iOS Release Build via Xcode
+            run: |
+              # Clean build directory
+              rm -rf build Payload NuvioMobile-*.ipa
+
+              # Determine project or workspace file
+              BUILD_COMMAND="xcodebuild -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_REQUIRED=NO"
+
+              if [ -d "NuvioMobile.xcworkspace" ]; then
+                $BUILD_COMMAND -workspace NuvioMobile.xcworkspace -scheme NuvioMobile
+              elif [ -d "NuvioMobile.xcodeproj" ]; then
+                $BUILD_COMMAND -project NuvioMobile.xcodeproj -scheme NuvioMobile
+              else
+                # Fallback search for any scheme
+                SCHEME=$(xcodebuild -list | grep -A 1 "Schemes:" | tail -n 1 | tr -d ' ')
+                echo "Building fallback scheme: $SCHEME"
+                $BUILD_COMMAND -scheme "$SCHEME"
+              fi
+
+          - name: 5. Package Unsigned .ipa File
+            run: |
+              mkdir -p Payload
+              APP_PATH=$(find build/Build/Products/Release-iphoneos -name "*.app" | head -n 1)
+
+              if [ -z "$APP_PATH" ]; then
+                echo "Error: Could not find compiled .app bundle!"
+                exit 1
+              fi
+
+              echo "Packaging $APP_PATH into IPA..."
+              cp -R "$APP_PATH" Payload/
+              zip -r "NuvioMobile-${{ steps.upstream.outputs.tag }}.ipa" Payload
+
+              echo "IPA Created: NuvioMobile-${{ steps.upstream.outputs.tag }}.ipa"
+
+          - name: 6. Publish Built .ipa to GitHub Releases
+            uses: softprops/action-gh-release@v2
+            with:
+              tag_name: ${{ steps.upstream.outputs.tag }}
+              name: NuvioMobile iOS ${{ steps.upstream.outputs.tag }}
+              body: |
+                Automated iOS build of `NuvioMedia/NuvioMobile` version `${{ steps.upstream.outputs.tag }}`.
+                Compiled on Mac Mini self-hosted runner.
+              files: NuvioMobile-*.ipa
+            env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
