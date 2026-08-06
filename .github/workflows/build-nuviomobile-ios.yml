@@ -1,0 +1,90 @@
+name: Build NuvioMobile iOS
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check-and-build:
+    runs-on: self-hosted
+
+    steps:
+      - name: 1. Check Upstream Latest Release / Commit
+        id: upstream
+        run: |
+          UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/releases/latest | jq -r .tag_name)
+          if [ "$UPSTREAM_TAG" == "null" ] || [ -z "$UPSTREAM_TAG" ]; then
+            UPSTREAM_TAG=$(curl -s https://api.github.com/repos/NuvioMedia/NuvioMobile/commits/cmp-rewrite | jq -r .sha | cut -c1-7)
+          fi
+          echo "tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+
+      - name: 2. Checkout NuvioMobile Code
+        uses: actions/checkout@v4
+        with:
+          repository: 'NuvioMedia/NuvioMobile'
+          ref: ${{ steps.upstream.outputs.tag }}
+          submodules: recursive
+
+      - name: 3. Install Dependencies
+        run: |
+          if [ -f "Podfile" ]; then
+            pod install || pod install --repo-update
+          fi
+
+      - name: 4. Compile iOS Release Build via Xcode
+        run: |
+          rm -rf Payload NuvioMobile-*.ipa
+
+          BUILD_COMMAND="xcodebuild -configuration Release -sdk iphoneos -derivedDataPath ~/Library/Caches/NuvioBuildCache CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO"
+          
+          if [ -d "NuvioMobile.xcworkspace" ]; then
+            $BUILD_COMMAND -workspace NuvioMobile.xcworkspace -scheme NuvioMobile
+          elif [ -d "NuvioMobile.xcodeproj" ]; then
+            $BUILD_COMMAND -project NuvioMobile.xcodeproj -scheme NuvioMobile
+          else
+            SCHEME=$(xcodebuild -list | grep -A 1 "Schemes:" | tail -n 1 | tr -d ' ')
+            $BUILD_COMMAND -scheme "$SCHEME"
+          fi
+
+      - name: 5. Package Unsigned .ipa File
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find ~/Library/Caches/NuvioBuildCache/Build/Products/Release-iphoneos -name "*.app" | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find compiled .app bundle!"
+            exit 1
+          fi
+          
+          cp -R "$APP_PATH" Payload/
+          zip -r "NuvioMobile-${{ steps.upstream.outputs.tag }}.ipa" Payload
+
+      - name: 6. Upload Artifact to Action Run Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: NuvioMobile-${{ steps.upstream.outputs.tag }}.ipa
+          path: NuvioMobile-*.ipa
+          retention-days: 14
+
+      - name: 7. Publish Built .ipa to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.upstream.outputs.tag }}
+          name: NuvioMobile iOS ${{ steps.upstream.outputs.tag }}
+          files: NuvioMobile-*.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 8. Send Bark Push Notification to iPhone
+        if: always()
+        run: |
+          TITLE="🚀 NuvioMobile Build Complete!"
+          BODY="Version ${{ steps.upstream.outputs.tag }} has been compiled and is ready."
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.upstream.outputs.tag }}"
+          
+          curl -s "https://api.day.app/${{ secrets.BARK_KEY }}/${TITLE}/${BODY}?url=${RELEASE_URL}&group=iOSBuilds"
